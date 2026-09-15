@@ -86,6 +86,7 @@ export class StreamRecorder {
   }
 
   async stop(anchorName: string): Promise<void> {
+    logger.info(anchorName, `[STOP-DEBUG] 进入 stop，recording=${this.recording}, buffer=${this.buffer.length}, gemini=${!!this.gemini}, ffmpeg=${!!this.ffmpeg}`);
     logger.info(anchorName, '[LIVE] 正在结束录音...');
     if (this.flushTimer) {
       clearInterval(this.flushTimer);

@@ -274,7 +274,7 @@ async function tick(rt: AnchorRuntime): Promise<void> {
   try {
     live = await getLiveInfo(anchor);
   } catch (err: any) {
-    rt.state = AnchorState.ERROR;
+    rt.state = AnchorState.ERROR; logger.error(anchor.name, `[STATE] -> ERROR`);
     logger.error(anchor.name, `[LIVE] 检查直播状态失败: ${err.message}`);
     return;
   }
@@ -285,7 +285,7 @@ async function tick(rt: AnchorRuntime): Promise<void> {
 
     if (rt.state === AnchorState.RECORDING && rt.offlineCount >= OFFLINE_THRESHOLD) {
       logger.info(anchor.name, `[LIVE] LIVE ended (state=${rt.state}, offline=${rt.offlineCount})`);
-      rt.state = AnchorState.OFFLINE;
+      rt.state = AnchorState.OFFLINE; logger.info(anchor.name, `[STATE] -> OFFLINE`);
       rt.currentRoomId = null;
       rt.streamFailCount = 0;
       rt.offlineCount = 0;
@@ -314,7 +314,7 @@ async function tick(rt: AnchorRuntime): Promise<void> {
   }
 
   rt.offlineCount = 0;
-  rt.state = AnchorState.LIVE;
+  if (rt.state !== AnchorState.RECORDING) { rt.state = AnchorState.LIVE; logger.info(anchor.name, `[STATE] -> LIVE (not recording)`); }
   rt.currentRoomId = live.roomId;
 
   const isRec = ASR_MODE === 'stream'
@@ -325,7 +325,7 @@ async function tick(rt: AnchorRuntime): Promise<void> {
     return;
   }
 
-  rt.state = AnchorState.RESOLVING_STREAM;
+  rt.state = AnchorState.RESOLVING_STREAM; logger.info(anchor.name, `[STATE] -> RESOLVING_STREAM`);
   logger.info(anchor.name, `[LIVE] LIVE, room_id=${live.roomId}`);
   logger.info(anchor.name, `[LIVE] resolving stream...`);
 
@@ -333,7 +333,7 @@ async function tick(rt: AnchorRuntime): Promise<void> {
     rt.streamFailCount++;
     logger.error(anchor.name, `[LIVE] stream URL 为空 (${rt.streamFailCount}/${STREAM_FAIL_LIMIT})`);
     if (rt.streamFailCount >= STREAM_FAIL_LIMIT) {
-      rt.state = AnchorState.ERROR;
+      rt.state = AnchorState.ERROR; logger.error(anchor.name, `[STATE] -> ERROR`);
       rt.streamFailCount = 0;
     }
     return;
@@ -343,7 +343,7 @@ async function tick(rt: AnchorRuntime): Promise<void> {
   logger.info(anchor.name, `[LIVE] stream resolved (${live.streamFormat})`);
 
   try {
-    rt.state = AnchorState.RECORDING;
+    rt.state = AnchorState.RECORDING; logger.info(anchor.name, `[STATE] -> RECORDING`);
     if (ASR_MODE === 'stream') {
       rt.streamRecorder?.start(anchor, live);
     } else {
@@ -351,7 +351,7 @@ async function tick(rt: AnchorRuntime): Promise<void> {
     }
     logger.info(anchor.name, '[LIVE] recording started');
   } catch (err: any) {
-    rt.state = AnchorState.ERROR;
+    rt.state = AnchorState.ERROR; logger.error(anchor.name, `[STATE] -> ERROR`);
     logger.error(anchor.name, `[LIVE] 启动录音失败: ${err.message}`);
   }
 }
