@@ -20,6 +20,7 @@ export class StreamRecorder {
   private buffer: string[] = [];
   private flushTimer: NodeJS.Timeout | null = null;
   private lastAnchor: Anchor | null = null;
+  private lastOnFinalTime = 0;
 
   constructor(private opts: StreamRecorderOptions) {}
 
@@ -34,6 +35,7 @@ export class StreamRecorder {
     this.currentDir = dir;
     this.lastAnchor = anchor;
     this.buffer = [];
+    this.lastOnFinalTime = Date.now();
 
     logger.info(anchor.name, `流式录音启动 (${liveInfo.streamFormat})`);
     logger.info(anchor.name, `目录: ${dir}`);
@@ -41,8 +43,9 @@ export class StreamRecorder {
 
     this.gemini = new GeminiLiveTranscriber({
       onFinal: (text) => {
+        this.lastOnFinalTime = Date.now();
         this.buffer.push(text);
-        logger.info(anchor.name, `[live] ${text}`);
+        logger.info(anchor.name, `[ONFINAL] ${text.length}字 buffer=${this.buffer.length}`);
       },
       onInterim: (text) => {
         process.stdout.write(`\r[${anchor.name}] ${text.slice(-50)}    `);
@@ -93,13 +96,11 @@ export class StreamRecorder {
       this.flushTimer = null;
     }
 
-    // 1) 先停 FFmpeg（停止输入）
     if (this.ffmpeg) {
       this.ffmpeg.kill('SIGINT');
       this.ffmpeg = null;
     }
 
-    // 2) 通知 Gemini 音频结束，等待最终 transcription
     if (this.gemini) {
       try {
         await this.gemini.endStream();
@@ -109,14 +110,10 @@ export class StreamRecorder {
       }
     }
 
-    // 3) 最终 flush（此时 buffer 已包含所有最终文本）
     if (this.lastAnchor && this.currentDir) {
       try {
-        // 把 lastInterim 也加进来
         const interim = this.gemini?.getLastInterim?.();
-        if (interim && interim.trim()) {
-          this.buffer.push(interim);
-        }
+        if (interim && interim.trim()) this.buffer.push(interim);
         if (this.buffer.length > 0) {
           const text = this.buffer.join('');
           this.buffer = [];
@@ -131,7 +128,6 @@ export class StreamRecorder {
       }
     }
 
-    // 4) 关闭 Gemini
     if (this.gemini) {
       try { this.gemini.stop(); } catch {}
       this.gemini = null;
@@ -141,10 +137,29 @@ export class StreamRecorder {
   }
 
   private async flushNow(anchor: Anchor): Promise<void> {
-    if (this.buffer.length === 0 || !this.currentDir) return;
+    const idleSec = (Date.now() - this.lastOnFinalTime) / 1000;
+    logger.info(anchor.name, `[FLUSH] buffer=${this.buffer.length}, idle=${idleSec.toFixed(0)}s`);
+
+    if (!this.currentDir) return;
+
+    // 如果 buffer 为空（Gemini 断流超过 3 分钟），用已有文件内容触发总结
+    if (this.buffer.length === 0) {
+      if (idleSec > 180) {
+        try {
+          const file = path.join(this.currentDir, 'live_transcript.txt');
+          const existing = fs.readFileSync(file, 'utf-8').trim();
+          if (existing.length > 100) {
+            const recent = existing.split('\n').slice(-30).join('\n');
+            logger.warn(anchor.name, `[FLUSH] buffer 空且已 idle ${idleSec.toFixed(0)}s，用最近文本触发总结`);
+            await this.opts.onFlush(anchor, recent, this.currentDir);
+          }
+        } catch {}
+      }
+      return;
+    }
+
     const text = this.buffer.join('');
     this.buffer = [];
-
     const file = path.join(this.currentDir, 'live_transcript.txt');
     fs.appendFileSync(file, `[${this.timeTag()}] ${text}\n`, 'utf-8');
     logger.info(anchor.name, `落盘 ${text.length} 字 -> live_transcript.txt`);
