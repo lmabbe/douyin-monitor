@@ -1,11 +1,10 @@
 {
-  "name": "douyin-live",
+  "name": "douyin-monitor",
   "version": "1.0.0",
   "type": "module",
   "scripts": {
     "start": "NODE_OPTIONS=\"--dns-result-order=ipv4first\" tsx src/index.ts",
     "dev": "NODE_OPTIONS=\"--dns-result-order=ipv4first\" tsx watch src/index.ts",
-    "demo": "tsx src/demo.ts"
   },
   "dependencies": {
     "axios": "^1.20.0",
