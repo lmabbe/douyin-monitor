@@ -85,37 +85,57 @@ export class StreamRecorder {
     }, this.opts.flushSeconds * 1000);
   }
 
-  stop(anchorName: string): void {
-    logger.info(anchorName, '停止流式录音');
-    if (this.flushTimer) { clearInterval(this.flushTimer); this.flushTimer = null; }
+  async stop(anchorName: string): Promise<void> {
+    logger.info(anchorName, '[LIVE] 正在结束录音...');
+    if (this.flushTimer) {
+      clearInterval(this.flushTimer);
+      this.flushTimer = null;
+    }
 
-    // 停止前 flush 一次，避免丢最后的文本
+    // 1) 先停 FFmpeg（停止输入）
+    if (this.ffmpeg) {
+      this.ffmpeg.kill('SIGINT');
+      this.ffmpeg = null;
+    }
+
+    // 2) 通知 Gemini 音频结束，等待最终 transcription
+    if (this.gemini) {
+      try {
+        await this.gemini.endStream();
+        logger.info(anchorName, '[ASR] 最终 transcription 已完成');
+      } catch (e: any) {
+        logger.warn(anchorName, `[ASR] endStream 异常: ${e.message}`);
+      }
+    }
+
+    // 3) 最终 flush（此时 buffer 已包含所有最终文本）
     if (this.lastAnchor && this.currentDir) {
       try {
-        // 1) 把 Gemini 的 lastInterim（最后的中间结果）也加进 buffer
+        // 把 lastInterim 也加进来
         const interim = this.gemini?.getLastInterim?.();
         if (interim && interim.trim()) {
           this.buffer.push(interim);
         }
-        // 2) 落盘
         if (this.buffer.length > 0) {
           const text = this.buffer.join('');
           this.buffer = [];
           const file = path.join(this.currentDir, 'live_transcript.txt');
           fs.appendFileSync(file, `[${this.timeTag()}] ${text}\n`, 'utf-8');
-          logger.info(anchorName, `[stop] 最后落盘 ${text.length} 字（含 interim）-> live_transcript.txt`);
+          logger.info(anchorName, `[LIVE] 最终 transcript 已写入 ${text.length} 字`);
+        } else {
+          logger.info(anchorName, '[LIVE] buffer 为空，无新文本落盘');
         }
       } catch (e: any) {
-        logger.error(anchorName, `[stop] 落盘失败: ${e.message}`);
+        logger.error(anchorName, `[LIVE] flush 失败: ${e.message}`);
       }
     }
 
+    // 4) 关闭 Gemini
     if (this.gemini) {
-      this.gemini.endStream();
-      setTimeout(() => this.gemini?.stop(), 2000);
+      try { this.gemini.stop(); } catch {}
       this.gemini = null;
     }
-    if (this.ffmpeg) { this.ffmpeg.kill('SIGINT'); this.ffmpeg = null; }
+
     this.recording = false;
   }
 

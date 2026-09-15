@@ -285,15 +285,29 @@ async function tick(rt: AnchorRuntime): Promise<void> {
 
     if (rt.state === AnchorState.RECORDING && rt.offlineCount >= OFFLINE_THRESHOLD) {
       logger.info(anchor.name, `[LIVE] LIVE ended (state=${rt.state}, offline=${rt.offlineCount})`);
-      rt.recorder?.stop(anchor.name);
-      rt.streamRecorder?.stop(anchor.name);
       rt.state = AnchorState.OFFLINE;
       rt.currentRoomId = null;
       rt.streamFailCount = 0;
       rt.offlineCount = 0;
-      generateAndPushSummary(anchor).catch((e: any) => {
-        logger.error(anchor.name, `[LIVE] 生成总结失败: ${e.message}`);
-      });
+
+      // 异步处理：等 ASR 结束 + 落盘 + 生成总结
+      // 不阻塞主监控循环
+      (async () => {
+        try {
+          // 1) 停止录制（内部会等 Gemini 最终 transcription）
+          if (ASR_MODE === 'stream') {
+            await rt.streamRecorder?.stop(anchor.name);
+          } else {
+            rt.recorder?.stop(anchor.name);
+          }
+          logger.info(anchor.name, '[LIVE] 开始生成总结');
+          // 2) 生成总结 + 推送
+          await generateAndPushSummary(anchor);
+          logger.info(anchor.name, '[LIVE] 总结生成完成');
+        } catch (e: any) {
+          logger.error(anchor.name, `[LIVE] 停止/总结失败: ${e.message}`);
+        }
+      })();
     }
     // 注意：不提前改成 OFFLINE，保持 RECORDING 状态，等 offlineCount 到 3 触发 LIVE ended
     return;

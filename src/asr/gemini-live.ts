@@ -18,6 +18,8 @@ export class GeminiLiveTranscriber {
   private ws: WebSocket | null = null;
   private pending = Buffer.alloc(0);
   private lastInterim = '';
+  private endStreamPromise: Promise<void> | null = null;
+  private resolveEndStream: (() => void) | null = null;
   private shuttingDown = false;
   private sessionHandle: string | null = null;   // session_resumption 句柄
   private reconnecting = false;
@@ -140,10 +142,36 @@ export class GeminiLiveTranscriber {
     }
   }
 
-  endStream(): void {
-    if (this.ws?.readyState === WebSocket.OPEN) {
-      this.ws.send(JSON.stringify({ realtimeInput: { audioStreamEnd: true } }));
+  async endStream(): Promise<void> {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+      return Promise.resolve();
     }
+
+    // 已有等待中的 promise，直接返回（避免重复调用泄漏）
+    if (this.endStreamPromise) {
+      return this.endStreamPromise;
+    }
+
+    this.endStreamPromise = new Promise<void>((resolve) => {
+      this.resolveEndStream = resolve;
+    });
+
+    console.log('[gemini-live] 发送 audioStreamEnd，等待最终 transcription...');
+    this.ws.send(JSON.stringify({ realtimeInput: { audioStreamEnd: true } }));
+
+    // 5 秒超时兜底
+    const timeout = new Promise<void>((resolve) => {
+      setTimeout(() => {
+        if (this.resolveEndStream) {
+          console.log('[gemini-live] 等待最终 transcription 超时（5s），继续');
+          this.resolveEndStream();
+          this.resolveEndStream = null;
+          this.endStreamPromise = null;
+        }
+      }, 5000);
+    });
+
+    return Promise.race([this.endStreamPromise, timeout]);
   }
 
   getLastInterim(): string {
