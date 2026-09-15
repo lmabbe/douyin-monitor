@@ -19,6 +19,11 @@ outbox.jsonl
 *.log
 logs/
 
+#包文件
+package-lock.json
+pnpm-lock.yaml
+pnpm-workspace.yaml
+
 # 系统文件
 .DS_Store
 Thumbs.db
