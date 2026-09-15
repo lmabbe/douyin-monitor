@@ -191,3 +191,156 @@ Q: Gemini Live 返回 0 字？
 - 2026-09-15：视频监控接入 Gemini Live，直播总结加【总结】标记
 - 2026-09-14：系统初版
 
+
+---
+
+## 启动步骤
+
+### 首次部署
+
+#### 1. 装依赖
+
+Termux:
+    pkg update
+    pkg install ffmpeg nodejs-lts git make clang
+
+Ubuntu/Debian:
+    sudo apt update
+    sudo apt install ffmpeg git
+    curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -
+    sudo apt install nodejs
+
+macOS:
+    brew install ffmpeg node@22 git
+
+验证:
+    which ffmpeg && ffmpeg -version | head -1
+    which node && node -v
+
+#### 2. 进项目目录
+
+    cd /data/data/com.termux/files/home/douyin-monitor
+
+#### 3. 装依赖
+
+    npm install
+
+#### 4. 配置 .env
+
+必须：
+    GEMINI_API_KEY=xxx
+    TENCENT_API_KEY=xxx
+    DOUYIN_COOKIE=xxx
+
+可选：
+    ASR_MODE=stream
+    STREAM_FLUSH_MINUTES=4
+    AI_SUMMARY_EVERY=4
+    VIDEO_CHECK_MINUTES=5
+
+#### 5. 配置主播
+
+编辑 config/anchors.json:
+    [
+      {
+        "name": "李一恩",
+        "webRid": "97162299125",
+        "videoUrl": "https://www.douyin.com/user/MS4wLjABAAAA...",
+        "enabled": true
+      }
+    ]
+
+#### 6. 启动
+
+    ./manage.sh start
+
+#### 7. 验证
+
+    ./manage.sh status
+    ./manage.sh log 30
+
+看到这些说明成功:
+    [system] === 抖音直播 + 视频监控启动 ===
+    [system] ASR 模式: stream
+    [system] [wechat] 使用已保存凭证，直接监听
+    [system] 已加载 N 个主播
+    [李一恩] [LIVE] OFFLINE (1/3)
+
+### 日常启动
+
+启动:
+    ./manage.sh start
+
+状态:
+    ./manage.sh status
+    ./manage.sh log 30
+    ./manage.sh log -f
+    ./manage.sh tail
+
+停止:
+    ./manage.sh stop
+
+重启:
+    ./manage.sh restart
+
+### 首次微信登录
+
+首次启动时，如果 .wechat-cred.json 不存在：
+1. 终端显示二维码
+2. 用微信扫一扫
+3. 授权后凭证保存
+4. 重启不需要再扫码
+
+重要：首次登录后，去微信里给 ClawBot 发一条消息（比如"hi"），
+激活 contextToken。之后才能收到推送。
+
+### 后台长期运行
+
+Termux:
+    termux-wake-lock
+    pkg install tmux
+    tmux new -s douyin
+    cd /data/data/com.termux/files/home/douyin-monitor
+    ./manage.sh start
+    # Ctrl+B 然后 D 脱离
+
+恢复:
+    tmux attach -t douyin
+
+### 验证状态
+
+进程:
+    ./manage.sh status
+
+日志:
+    ./manage.sh log 30
+
+目录:
+    find records -type d | head -20
+
+微信:
+    grep wechat monitor.out | tail -10
+
+### 常见问题
+
+spawn ffmpeg ENOENT:
+    pkg install ffmpeg
+
+Cannot find module:
+    npm install
+
+启动后立刻退出:
+    ./manage.sh log 50
+    tail -100 monitor.out
+
+微信没显示二维码:
+    rm -f .wechat-cred.json
+    ./manage.sh restart
+
+### 更新代码
+
+    ./manage.sh stop
+    git pull
+    npm install
+    ./manage.sh start
+
