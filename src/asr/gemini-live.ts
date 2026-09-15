@@ -23,7 +23,6 @@ export class GeminiLiveTranscriber {
   private endStreamPromise: Promise<void> | null = null;
   private resolveEndStream: (() => void) | null = null;
   private shuttingDown = false;
-  private sessionHandle: string | null = null;
   private reconnecting = false;
   private lastTextTime = Date.now();
   private lastPcmTime = Date.now();
@@ -73,10 +72,7 @@ export class GeminiLiveTranscriber {
         generationConfig: { responseModalities: ['TEXT'] },
         inputAudioTranscription: { languageCodes: [], mode: 'SMART' },
       };
-      if (this.sessionHandle) {
-        setup.sessionResumption = { handle: this.sessionHandle, transparent: true };
-        console.log(`[gemini-live] 使用 session handle 恢复会话`);
-      }
+      // 不用 sessionResumption：每次重连都当全新会话，避免音频不匹配假死
       this.ws!.send(JSON.stringify({ setup }));
     });
 
@@ -86,16 +82,6 @@ export class GeminiLiveTranscriber {
 
       if (msg.goAway) {
         console.log(`[gemini-live] ⚠️ 收到 GoAway，剩余时间: ${msg.goAway.timeLeft || '?'}`);
-        return;
-      }
-
-      if (msg.sessionResumptionUpdate) {
-        const upd = msg.sessionResumptionUpdate;
-        if (upd.newHandle) this.sessionHandle = upd.newHandle;
-        if (upd.resumable === false && upd.newHandle === undefined) {
-          console.log(`[gemini-live] ⚠️ 服务端标记会话不可恢复`);
-          this.sessionHandle = null;
-        }
         return;
       }
 
