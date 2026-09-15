@@ -11,7 +11,19 @@ function extractRoom(data: any): any | null {
   return null;
 }
 
+let forceOfflineStartTime = 0;
 export async function getLiveInfo(anchor: Anchor): Promise<LiveInfo> {
+  const delaySec = Number(process.env.FORCE_OFFLINE_DELAY_SECONDS || '0');
+  const forceAnchor = process.env.FORCE_OFFLINE_ANCHOR;
+  if (forceAnchor && delaySec > 0) {
+    if (forceOfflineStartTime === 0) forceOfflineStartTime = Date.now();
+    const elapsed = (Date.now() - forceOfflineStartTime) / 1000;
+    if (elapsed >= delaySec && anchor.name === forceAnchor) {
+      console.log(`[TEST] 延迟 ${delaySec}s 后强制 offline: ${anchor.name}`);
+      return offline();
+    }
+  }
+
   const data = await client.enterRoom(anchor.webRid);
   if (data?.status_code !== 0 && data?.status_code !== undefined) {
     client.invalidateTtwid(anchor.webRid);
