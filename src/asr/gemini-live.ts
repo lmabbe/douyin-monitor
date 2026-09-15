@@ -6,8 +6,8 @@ const MODEL = process.env.GEMINI_LIVE_MODEL || 'gemini-3.5-transcribe-live';
 const WS_URL = `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent?key=${API_KEY}`;
 
 const CHUNK_SIZE = 3200;
-const WATCHDOG_IDLE_MS = 90_000;   // 90 秒无文本，强制重连
-const WATCHDOG_INTERVAL_MS = 30_000;
+const WATCHDOG_IDLE_MS = 15_000;   // 15 秒无文本（有 PCM 时），强制重连
+const WATCHDOG_INTERVAL_MS = 5_000;
 
 export interface GeminiLiveCallbacks {
   onFinal: (text: string) => void;
@@ -26,6 +26,7 @@ export class GeminiLiveTranscriber {
   private sessionHandle: string | null = null;
   private reconnecting = false;
   private lastTextTime = Date.now();
+  private lastPcmTime = Date.now();
   private watchdogTimer: NodeJS.Timeout | null = null;
 
   constructor(private callbacks: GeminiLiveCallbacks) {}
@@ -41,6 +42,7 @@ export class GeminiLiveTranscriber {
       if (this.shuttingDown) return;
       const idleSec = (Date.now() - this.lastTextTime) / 1000;
       // 连接开着但长时间无文本 → 强制断开重连
+      const idlePcm = (Date.now() - this.lastPcmTime) / 1000;
       if (idleSec > WATCHDOG_IDLE_MS / 1000 && this.ws?.readyState === WebSocket.OPEN) {
         console.log(`[gemini-live] ⚠️ 看门狗：${idleSec.toFixed(0)}s 无文本，强制重连`);
         try { this.ws.close(); } catch {}
@@ -148,6 +150,7 @@ export class GeminiLiveTranscriber {
   }
 
   feed(pcm: Buffer): void {
+    this.lastPcmTime = Date.now();
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
     this.pending = Buffer.concat([this.pending, pcm]);
     while (this.pending.length >= CHUNK_SIZE) {

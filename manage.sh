@@ -187,6 +187,17 @@ cmd_log() {
 }
 
 # ---------- restart ----------
+cmd_reload() {
+  echo -e "${BLUE}[*] 触发配置热重载...${NC}"
+  if ! is_running; then
+    echo -e "${YELLOW}[!] 未在运行${NC}"
+    return 1
+  fi
+  # 创建信号文件，程序检测到后重载 anchors.json
+  touch "$DIR/.reload"
+  echo -e "${GREEN}[ok] 已触发，2 秒后查看日志: ./manage.sh log 10${NC}"
+}
+
 cmd_restart() {
   cmd_stop
   sleep 1
@@ -226,6 +237,7 @@ usage() {
   start         启动监控（后台运行）
   stop          停止监控
   restart       重启监控
+  reload        热重载 anchors.json（不重启）
   status        查看运行状态
   log [N]       查看最近 N 行日志（默认 30）
   log follow    实时查看日志（等同 tail -f）
@@ -246,6 +258,7 @@ case "$1" in
   start)    cmd_start ;;
   stop)     cmd_stop ;;
   restart)  cmd_restart ;;
+  reload)   cmd_reload ;;
   status|st) cmd_status ;;
   log)      shift; cmd_log "$@" ;;
   tail)     cmd_tail ;;

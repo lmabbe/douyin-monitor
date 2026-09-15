@@ -431,6 +431,75 @@ async function main(): Promise<void> {
   await tickAll();
   setInterval(tickAll, CHECK_INTERVAL_MS);
 
+  // ========== 配置热重载（信号文件触发） ==========
+  const RELOAD_SIGNAL = path.join(process.cwd(), '.reload');
+  let reloading = false;
+
+  setInterval(() => {
+    if (reloading) return;
+    if (!fs.existsSync(RELOAD_SIGNAL)) return;
+    try { fs.unlinkSync(RELOAD_SIGNAL); } catch {}
+    reloading = true;
+    try {
+      logger.sys('[RELOAD] 检测到 .reload 信号，重新加载 anchors.json...');
+      const newAnchors = loadAnchors();
+      const newNames = new Set(newAnchors.map(a => a.name));
+
+      for (const [name, rt] of runtimes.entries()) {
+        if (!newNames.has(name)) {
+          logger.sys(`[RELOAD] 移除主播: ${name}`);
+          rt.recorder?.stop(name);
+          rt.streamRecorder?.stop(name);
+          runtimes.delete(name);
+        }
+      }
+
+      for (const a of newAnchors) {
+        if (!runtimes.has(a.name)) {
+          logger.sys(`[RELOAD] 新增主播: ${a.name}`);
+          const rt: AnchorRuntime = {
+            anchor: a,
+            state: AnchorState.OFFLINE,
+            offlineCount: 0,
+            streamFailCount: 0,
+            currentRoomId: null,
+            recorder: null,
+            streamRecorder: null,
+          };
+          rt.recorder = new Recorder({
+            recordsDir: RECORDS_DIR,
+            segmentSeconds: SEGMENT_SECONDS,
+            onSegmentReady: (anchor, segmentPath, hourDir) => {
+              processAsrQueue({ anchor, segmentPath, hourDir });
+            },
+            onExit: () => {},
+          });
+          rt.streamRecorder = new StreamRecorder({
+            recordsDir: RECORDS_DIR,
+            flushSeconds: STREAM_FLUSH_MINUTES * 60,
+            onFlush: onStreamFlush,
+            onExit: () => {},
+          });
+          runtimes.set(a.name, rt);
+        } else {
+          const rt = runtimes.get(a.name)!;
+          if (rt.anchor.webRid !== a.webRid || rt.anchor.videoUrl !== a.videoUrl) {
+            logger.sys(`[RELOAD] 更新主播配置: ${a.name}`);
+            rt.anchor = a;
+          }
+        }
+      }
+
+      logger.sys(`[RELOAD] 完成，当前监控 ${runtimes.size} 个主播: ${[...runtimes.keys()].join(', ')}`);
+    } catch (e: any) {
+      logger.error('system', `[RELOAD] 失败: ${e.message}`);
+    } finally {
+      reloading = false;
+    }
+  }, 3000);
+  // ========== /配置热重载 ==========
+
+
   // 视频检查：每 N 分钟
   const checkAllVideos = async () => {
     for (const rt of runtimes.values()) {
