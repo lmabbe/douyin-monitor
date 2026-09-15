@@ -1,0 +1,194 @@
+import { spawn, ChildProcess } from 'child_process';
+import path from 'path';
+import fs from 'fs';
+import { Anchor, LiveInfo } from '../douyin/types.js';
+import { logger } from '../logger.js';
+
+interface RecorderOptions {
+  recordsDir: string;
+  segmentSeconds?: number;
+  onSegmentReady?: (anchor: Anchor, segmentPath: string, hourDir: string) => void;
+  onExit?: (anchor: Anchor, code: number | null) => void;
+}
+
+export class Recorder {
+  private process: ChildProcess | null = null;
+  private recording = false;
+  private currentHourDir: string | null = null;
+  private segmentSeconds: number;
+  private recordsDir: string;
+  private onSegmentReady?: RecorderOptions['onSegmentReady'];
+  private onExit?: RecorderOptions['onExit'];
+  private seenSegments = new Set<string>();
+  private segmentWatcher: NodeJS.Timeout | null = null;
+
+  constructor(opts: RecorderOptions) {
+    this.recordsDir = opts.recordsDir;
+    this.segmentSeconds = opts.segmentSeconds ?? 120;
+    this.onSegmentReady = opts.onSegmentReady;
+    this.onExit = opts.onExit;
+  }
+
+  isRecording(): boolean { return this.recording; }
+
+  start(anchor: Anchor, liveInfo: LiveInfo): void {
+    if (this.recording) {
+      logger.warn(anchor.name, '已在录音中，跳过 start');
+      return;
+    }
+    if (!liveInfo.streamUrl) throw new Error('streamUrl 为空');
+
+    const hourDir = this.hourDirPath(anchor.name);
+    fs.mkdirSync(hourDir, { recursive: true });
+    this.currentHourDir = hourDir;
+
+    const outputTemplate = path.join(hourDir, 'seg_%03d.m4a');
+    const isHls = liveInfo.streamFormat === 'hls';
+
+    // HLS 用 AAC 重编码，FLV 用 copy
+    const audioArgs = isHls
+      ? ['-c:a', 'aac', '-b:a', '96k', '-ar', '44100', '-ac', '1']
+      : ['-c:a', 'copy'];
+
+    const args = [
+      '-hide_banner',
+      '-loglevel', 'warning',
+      '-rw_timeout', '15000000',
+      '-reconnect', '1',
+      '-reconnect_streamed', '1',
+      '-reconnect_delay_max', '5',
+      '-i', liveInfo.streamUrl,
+      '-vn',
+      ...audioArgs,
+      '-f', 'segment',
+      '-segment_time', String(this.segmentSeconds),
+      '-segment_format', 'mp4',
+      '-reset_timestamps', '1',
+      '-movflags', '+faststart',
+      outputTemplate,
+    ];
+
+    logger.info(anchor.name, `starting ffmpeg (${liveInfo.streamFormat}, ${this.segmentSeconds}s/segment, audio=${isHls ? 'aac' : 'copy'})`);
+    logger.info(anchor.name, `output dir: ${hourDir}`);
+
+    const proc = spawn('ffmpeg', args, { stdio: ['ignore', 'pipe', 'pipe'] });
+    this.process = proc;
+    this.recording = true;
+
+    proc.stderr?.on('data', (buf: Buffer) => {
+      const text = buf.toString();
+      for (const line of text.split('\n')) {
+        const t = line.trim();
+        if (!t) continue;
+        if (t.includes('Error') || t.includes('error') || t.includes('failed') || t.includes('404')) {
+          logger.error(anchor.name, `ffmpeg: ${t}`);
+        }
+      }
+    });
+
+    proc.on('error', (err) => {
+      logger.error(anchor.name, `ffmpeg spawn error: ${err.message}`);
+      this.recording = false;
+      this.process = null;
+      this.onExit?.(anchor, null);
+    });
+
+    proc.on('exit', (code, signal) => {
+      logger.info(anchor.name, `ffmpeg stopped (code=${code}, signal=${signal})`);
+      // 退出后，把当前目录剩余未处理的切片全部处理掉
+      this.flushRemaining(anchor);
+      this.recording = false;
+      this.process = null;
+      this.onExit?.(anchor, code);
+    });
+
+    this.segmentWatcher = setInterval(() => this.scanSegments(anchor), 5000);
+  }
+
+  stop(anchorName: string): void {
+    if (this.segmentWatcher) {
+      clearInterval(this.segmentWatcher);
+      this.segmentWatcher = null;
+    }
+    if (!this.process) { this.recording = false; return; }
+    logger.info(anchorName, 'stopping ffmpeg');
+    this.process.kill('SIGINT');
+    this.process = null;
+    this.recording = false;
+  }
+
+  /**
+   * 核心判定：只有"下一个切片已出现"或"下一个切片未出现但文件 mtime 超过 segmentSeconds+15s"
+   * 才认为当前切片已经封口。
+   */
+  private scanSegments(anchor: Anchor): void {
+    const dir = this.currentHourDir;
+    if (!dir || !fs.existsSync(dir)) return;
+
+    let files: string[];
+    try { files = fs.readdirSync(dir); } catch { return; }
+
+    // 只处理 seg_NNN.m4a
+    const segFiles = files
+      .filter(f => /^seg_\d+\.m4a$/.test(f))
+      .sort();
+
+    for (let i = 0; i < segFiles.length; i++) {
+      const f = segFiles[i];
+      const full = path.join(dir, f);
+      if (this.seenSegments.has(full)) continue;
+
+      const hasNext = i < segFiles.length - 1;
+      let st: fs.Stats;
+      try { st = fs.statSync(full); } catch { continue; }
+
+      // 太小 → 跳过
+      if (st.size < 50 * 1024) continue;
+
+      // 若存在下一个切片，则本切片肯定已封口
+      if (hasNext) {
+        this.emitSegment(anchor, full, f, dir, st.size);
+        continue;
+      }
+
+      // 没有下一个切片时，用 mtime 判定：
+      // 文件最后修改时间超过 (segmentSeconds + 15) 秒，且当前 ffmpeg 已停止或已超过宽限
+      const ageSec = (Date.now() - st.mtimeMs) / 1000;
+      const grace = this.segmentSeconds + 15;
+      if (ageSec >= grace) {
+        this.emitSegment(anchor, full, f, dir, st.size);
+      }
+    }
+  }
+
+  /** ffmpeg 退出时，把剩余可读的切片也处理掉 */
+  private flushRemaining(anchor: Anchor): void {
+    const dir = this.currentHourDir;
+    if (!dir || !fs.existsSync(dir)) return;
+    let files: string[];
+    try { files = fs.readdirSync(dir); } catch { return; }
+    const segFiles = files.filter(f => /^seg_\d+\.m4a$/.test(f)).sort();
+    for (const f of segFiles) {
+      const full = path.join(dir, f);
+      if (this.seenSegments.has(full)) continue;
+      let st: fs.Stats;
+      try { st = fs.statSync(full); } catch { continue; }
+      if (st.size < 50 * 1024) continue;
+      this.emitSegment(anchor, full, f, dir, st.size);
+    }
+  }
+
+  private emitSegment(anchor: Anchor, fullPath: string, fileName: string, hourDir: string, size: number): void {
+    this.seenSegments.add(fullPath);
+    logger.info(anchor.name, `segment completed: ${fileName} (${(size/1024).toFixed(0)} KB)`);
+    try { this.onSegmentReady?.(anchor, fullPath, hourDir); }
+    catch (e: any) { logger.error(anchor.name, `onSegmentReady 回调异常: ${e.message}`); }
+  }
+
+  private hourDirPath(anchorName: string): string {
+    const d = new Date();
+    const p = (n: number) => String(n).padStart(2, '0');
+    const tag = `${d.getFullYear()}${p(d.getMonth()+1)}${p(d.getDate())}${p(d.getHours())}${p(d.getMinutes())}`;
+    return path.join(this.recordsDir, anchorName, 'live', tag);
+  }
+}

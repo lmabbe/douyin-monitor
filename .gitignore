@@ -1,0 +1,39 @@
+# 依赖
+node_modules/
+.pnpm-store/
+
+# 敏感信息（绝对不能提交）
+.env
+.env.local
+.wechat-cred.json
+.video-state.json
+.gemini-disabled.json
+
+# 运行时数据
+records/
+monitor.out
+outbox.jsonl
+.monitor.pid
+
+# 日志
+*.log
+logs/
+
+# 系统文件
+.DS_Store
+Thumbs.db
+
+# 编辑器
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# 备份
+*.bak
+*.bak.*
+config/.backups/
+
+# 临时文件
+.tmp/
+*.tmp
