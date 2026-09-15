@@ -266,7 +266,9 @@ async function tick(rt: AnchorRuntime): Promise<void> {
     return;
   }
 
-  rt.state = AnchorState.CHECKING;
+  // 注意：这里不再改 state 为 CHECKING
+  // 否则 OFFLINE 分支检查 state === RECORDING 会永远失败
+  // 状态只在明确开播/录制时改
 
   let live: LiveInfo;
   try {
