@@ -8,7 +8,7 @@ import { logger } from '../logger.js';
 
 const execFileAsync = promisify(execFile);
 
-const DOUYIN_COOKIE = process.env.DOUYIN_COOKIE || '';
+let DOUYIN_COOKIE = '';
 const FETCH_COUNT = Number(process.env.VIDEO_FETCH_COUNT || '20');
 const RECORDS_DIR = path.join(process.cwd(), 'records');
 const STATE_FILE = path.join(process.cwd(), '.video-state.json');
@@ -17,6 +17,14 @@ const STATE_FILE = path.join(process.cwd(), '.video-state.json');
 function loadState(): Record<string, string> {
   try { return JSON.parse(fs.readFileSync(STATE_FILE, 'utf-8')); }
   catch { return {}; }
+}
+
+function getCookie():string{
+  return  process.env.DOUYIN_COOKIE || '';
+  /*if (DOUYIN_COOKIE == ''){
+    DOUYIN_COOKIE = process.env.DOUYIN_COOKIE || '';
+  }
+  return DOUYIN_COOKIE || process.env.DOUYIN_COOKIE;*/
 }
 
 function saveState(state: Record<string, string>): void {
@@ -80,7 +88,7 @@ export async function checkAnchorVideos(
     logger.info(anchor.name, '[VIDEO] 未配置视频主页，跳过');
     return;
   }
-  if (!DOUYIN_COOKIE) {
+  if (!getCookie()) {
     logger.error(anchor.name, '[VIDEO] 未配置 DOUYIN_COOKIE，跳过');
     return;
   }
@@ -91,7 +99,7 @@ export async function checkAnchorVideos(
     const { getSecUserId, DouyinHandler, DouyinDownloader } = await import('polydl');
 
     const secUserId = await getSecUserId(anchor.videoUrl);
-    const handler = new DouyinHandler({ cookie: DOUYIN_COOKIE });
+    const handler = new DouyinHandler({ cookie: getCookie() });
 
     // 收集所有视频
     const allVideos: Array<{ id: string; createTime: string; dirTag: string }> = [];
@@ -186,7 +194,7 @@ async function processOne(
 
     // 下载
     const downloader = new DouyinDownloader({
-      cookie: DOUYIN_COOKIE,
+      cookie: getCookie(),
       downloadPath: tmpDir,
       naming: '{aweme_id}',
       music: false, cover: false, desc: false,
