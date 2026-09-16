@@ -8,4 +8,5 @@ export const logger = {
   warn(name: string, msg: string)  { console.log(`${ts()} [${name}] WARN: ${msg}`); },
   error(name: string, msg: string) { console.error(`${ts()} [ERROR] [${name}] ${msg}`); },
   sys(msg: string)                 { console.log(`${ts()} [system] ${msg}`); },
+  sys_error(msg: string)           { console.log(`${ts()} [error] ${msg}`); },
 };
