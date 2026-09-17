@@ -2,6 +2,7 @@ import 'dotenv/config';
 import OpenAI from 'openai';
 import fs from 'fs';
 import path from 'path';
+import { getCleanTranscriptPrompt, getSummarizeSegmentPrompt, getSummarizeSessionPrompt } from './prompts.js';
 
 const API_KEY = process.env.GEMINI_API_KEY!;
 const MODELS = (process.env.GEMINI_MODEL || 'gemini-3-flash')
@@ -137,9 +138,7 @@ async function tryModels<T>(
   throw new Error(`所有 Gemini 模型都失败: ${lastErr?.message}`);
 }
 
-/**
- * 纠错（备用）
- */
+/** 纠错（备用） */
 export async function cleanTranscript(rawText: string): Promise<string> {
   if (!rawText.trim()) return '';
 
@@ -147,10 +146,7 @@ export async function cleanTranscript(rawText: string): Promise<string> {
     const completion = await client.chat.completions.create({
       model,
       messages: [
-        {
-          role: 'system',
-          content: '你是中文语音识别后处理助手。修正同音错字、补全标点、去掉重复。直接输出修正后的文本，不要解释。',
-        },
+        { role: 'system', content: getCleanTranscriptPrompt() },
         { role: 'user', content: rawText },
       ],
       temperature: 0.1,
@@ -162,9 +158,7 @@ export async function cleanTranscript(rawText: string): Promise<string> {
   return result;
 }
 
-/**
- * 切片级结构化总结
- */
+/** 切片级结构化总结 */
 export async function summarizeSegment(rawText: string): Promise<string> {
   if (!rawText.trim()) return '';
 
@@ -172,33 +166,7 @@ export async function summarizeSegment(rawText: string): Promise<string> {
     const completion = await client.chat.completions.create({
       model,
       messages: [
-        {
-          role: 'system',
-          content: [
-            '你是 A 股财经直播内容分析师。',
-            '从这段直播文本中提炼核心观点，输出结构化总结。',
-            '',
-            '【格式】只输出有内容的字段：',
-            '',
-            '**板块**：xxx',
-            '- 观点1',
-            '- 观点2',
-            '',
-            '**大盘/指数**：xxx',
-            '- 观点1',
-            '',
-            '**风险/其他**：xxx',
-            '- 观点1',
-            '',
-            '【规则】',
-            '1. 只提炼主播明确说出的判断',
-            '2. 去掉寒暄、关注、点赞、粉丝等运营话术',
-            '3. 去掉重复啰嗦的口语',
-            '4. 如果整段没有实质观点，输出"（本段无实质观点）"',
-            '5. 【极其重要】禁止输出任何思考过程、英文说明',
-            '6. 【极其重要】直接给结论',
-          ].join('\n'),
-        },
+        { role: 'system', content: getSummarizeSegmentPrompt() },
         { role: 'user', content: rawText },
       ],
       temperature: 0.3,
@@ -211,22 +179,13 @@ export async function summarizeSegment(rawText: string): Promise<string> {
   });
 }
 
-/**
- * 整场直播完整总结
- */
+/** 整场直播完整总结 */
 export async function summarizeSession(fullText: string): Promise<string> {
   return tryModels('summarizeSession', async (model, client) => {
     const completion = await client.chat.completions.create({
       model,
       messages: [
-        {
-          role: 'system',
-          content:
-            '你是财经直播内容分析助手。请从文字稿提取：\n' +
-            '1. 核心观点（3-5 条）\n2. 宏观判断\n' +
-            '3. 对 A 股 / 美股 / 黄金 / 美元 / 人民币 的判断\n' +
-            '4. 关键数据\n5. 风险因素\n输出 markdown。',
-        },
+        { role: 'system', content: getSummarizeSessionPrompt() },
         { role: 'user', content: fullText.slice(0, 60_000) },
       ],
       temperature: 0.3,

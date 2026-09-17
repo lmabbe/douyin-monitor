@@ -7,6 +7,7 @@
     "dev": "NODE_OPTIONS=\"--dns-result-order=ipv4first\" tsx watch src/index.ts"
   },
   "dependencies": {
+    "@ikenxuan/amagi": "^6.6.0",
     "axios": "^1.20.0",
     "dotenv": "^17.4.2",
     "openai": "^7.15.0",

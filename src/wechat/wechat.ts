@@ -1,0 +1,96 @@
+/**
+ * 微信桥接：登录、轮询、推送
+ *
+ * 依赖：config.ts, runtime.ts, logger.ts, wx-link
+ */
+import fs from 'fs';
+import {Anchor} from '../douyin/types.js';
+import {logger} from '../logger.js';
+import {fmtErr} from '../runtime.js';
+import {WECHAT_CRED_FILE, OUTBOX_FILE} from '../config.js';
+
+let wxClient: any = null;
+let wxCred: any = null;
+
+export async function initWechat(): Promise<void> {
+    try {
+        const {loginWithQR, WxLinkClient} = await import('wx-link');
+        const qrcode = (await import('qrcode-terminal')).default;
+
+        if (fs.existsSync(WECHAT_CRED_FILE)) {
+            wxCred = JSON.parse(fs.readFileSync(WECHAT_CRED_FILE, 'utf-8'));
+            logger.sys('[wechat] 使用已保存凭证，直接监听');
+        } else {
+            logger.sys('[wechat] 未配置，请扫码登录');
+            const login: any = await loginWithQR({
+                onQRCode: (url: string) => {
+                    console.log('\n=== 请用微信扫码 ===\n');
+                    qrcode.generate(url, {small: true}, (qr: string) => console.log(qr));
+                    console.log(`\n(扫码不便时可手动打开: ${url})\n====================\n`);
+                },
+            });
+            wxCred = {baseUrl: login.baseUrl, botToken: login.botToken, cursor: ''};
+            fs.writeFileSync(WECHAT_CRED_FILE, JSON.stringify(wxCred, null, 2), {mode: 0o600});
+            logger.sys('[wechat] 登录成功，凭证已保存');
+        }
+
+        wxClient = new WxLinkClient({baseUrl: wxCred.baseUrl, token: wxCred.botToken});
+
+        setInterval(async () => {
+            if (!wxClient || !wxCred) return;
+            try {
+                const updates: any = await wxClient.poll(wxCred.cursor);
+                wxCred.cursor = updates.nextCursor ?? wxCred.cursor;
+                for (const msg of updates.msgs ?? []) {
+                    if (msg.from_user_id && msg.context_token) {
+                        if (!wxCred.targetUserId) logger.sys(`[wechat] 已捕获目标用户: ${msg.from_user_id}`);
+                        wxCred.targetUserId = msg.from_user_id;
+                        wxCred.contextToken = msg.context_token;
+                        fs.writeFileSync(WECHAT_CRED_FILE, JSON.stringify(wxCred, null, 2));
+                    }
+                }
+            } catch (e: any) {
+                if (!e.message?.includes('timeout')) logger.error('wechat', `poll: ${e.message}`);
+            }
+        }, 10_000);
+
+        logger.sys('[wechat] 桥接已启动');
+    } catch (e: any) {
+        logger.error('wechat', `初始化失败: ${fmtErr(e)}`);
+        logger.error('wechat', `堆栈: ${e.stack}`);
+    }
+}
+
+export async function pushToWechat(
+    tag: string,
+    anchor: Anchor,
+    fileName: string,
+    timeTag: string,
+    text: string
+): Promise<void> {
+    // 1. 永远先写 outbox（离线也不丢）
+    const entry =
+        JSON.stringify({
+            tag,
+            anchor: anchor.name,
+            file: fileName,
+            time: timeTag,
+            text: text.replace(/\s+/g, ' ').trim(),
+        }) + '\n';
+    fs.appendFileSync(OUTBOX_FILE, entry, 'utf-8');
+
+    // 2. 在线才推送
+    if (wxClient && wxCred?.targetUserId && wxCred?.contextToken) {
+        const msg = `【${tag}】【${anchor.name}】${timeTag}\n${text.slice(0, 1500)}`;
+        try {
+            await wxClient.sendText({
+                toUserId: wxCred.targetUserId,
+                text: msg,
+                contextToken: wxCred.contextToken,
+            });
+            logger.info('wechat', `[${tag}] 已推送: ${anchor.name} / ${fileName}`);
+        } catch (e: any) {
+            logger.error('wechat', `[${tag}] 推送失败: ${fmtErr(e)}`);
+        }
+    }
+}

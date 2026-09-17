@@ -1,4 +1,5 @@
 import axios, { AxiosInstance } from 'axios';
+import {logger} from "../logger";
 
 const UA_DEFAULT =
   'Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Mobile Safari/537.36';
