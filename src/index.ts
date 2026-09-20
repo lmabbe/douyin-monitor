@@ -5,7 +5,7 @@ import { Anchor } from './douyin/types.js';
 import { Recorder } from './recorder/recorder.js';
 import { StreamRecorder } from './recorder/stream-recorder.js';
 import { logger } from './logger.js';
-
+import { formatAiChain } from './ai';
 // 本地模块
 import {
   CHECK_INTERVAL_MS,
@@ -84,6 +84,7 @@ function buildRuntime(a: Anchor): AnchorRuntime {
 function logStartupBanner(): void {
   logger.sys('=== 抖音直播 + 视频监控启动 ===');
   logger.sys(`ASR 模式: ${ASR_MODE}`);
+  logger.sys(`AI 降级链: ${formatAiChain()}`);
   logger.sys(`直播检查间隔: ${CHECK_INTERVAL_MS / 1000}s`);
   logger.sys(
     `视频检查间隔: ${(VIDEO_RANGE.minMs / 60000).toFixed(1)}~${(VIDEO_RANGE.maxMs / 60000).toFixed(

@@ -8,18 +8,29 @@ import os from 'os';
 const execFileAsync = promisify(execFile);
 
 // ========== 从 .env 读路径，带默认值 ==========
-const SENSEVOICE_DIR = process.env.SENSEVOICE_DIR ||
-    path.join(os.homedir(), 'sensevoice');
-const SENSEVOICE_BIN = process.env.SENSEVOICE_BIN ||
-    path.join(SENSEVOICE_DIR, 'llama-funasr-sensevoice');
-const SENSEVOICE_MODEL = process.env.SENSEVOICE_MODEL ||
-    path.join(SENSEVOICE_DIR, 'gguf/sensevoice-small-q8.gguf');
-const SENSEVOICE_VAD = process.env.SENSEVOICE_VAD ||
-    path.join(SENSEVOICE_DIR, 'gguf/fsmn-vad.gguf');
+function expandHome(p: string): string {
+  if (!p) return p;
+  if (p === '~') return os.homedir();
+  if (p.startsWith('~/')) return path.join(os.homedir(), p.slice(2));
+  return p;
+}
+
+const SENSEVOICE_DIR = expandHome(
+  process.env.SENSEVOICE_DIR || path.join(os.homedir(), 'sensevoice')
+);
+const SENSEVOICE_BIN = expandHome(
+  process.env.SENSEVOICE_BIN || path.join(SENSEVOICE_DIR, 'llama-funasr-sensevoice')
+);
+const SENSEVOICE_MODEL = expandHome(
+  process.env.SENSEVOICE_MODEL || path.join(SENSEVOICE_DIR, 'gguf/sensevoice-small-q8.gguf')
+);
+const SENSEVOICE_VAD = expandHome(
+  process.env.SENSEVOICE_VAD || path.join(SENSEVOICE_DIR, 'gguf/fsmn-vad.gguf')
+);
 
 // grun：Termux 用 glibc-runner，其他系统直接跑
 const GRUN_BIN = process.env.GRUN_BIN || 'grun';
-const USE_GRUN = process.env.USE_GRUN !== 'false';  // 默认 true（Termux）
+const USE_GRUN = process.env.USE_GRUN !== 'false';
 
 // ffmpeg：允许覆盖
 const FFMPEG_BIN = process.env.FFMPEG_BIN || 'ffmpeg';
@@ -66,7 +77,10 @@ function parseSrt(srtContent: string): string {
   return texts.join('').replace(/\s+/g, ' ').trim();
 }
 
-export async function transcribe(audioPath: string): Promise<string> {
+/**
+ * 本地 SenseVoice 转写（内部函数，不对外）
+ */
+async function transcribeLocal(audioPath: string): Promise<string> {
   const base = audioPath.replace(/\.m4a$/i, '');
   const wavPath = `${base}.asr.wav`;
 
@@ -82,7 +96,6 @@ export async function transcribe(audioPath: string): Promise<string> {
     // 2) SenseVoice
     let stdout: string;
     if (USE_GRUN) {
-      // Termux：用 grun -f 加载 glibc 二进制
       const r = await execFileAsync(GRUN_BIN, [
         '-f', SENSEVOICE_BIN,
         '-m', SENSEVOICE_MODEL,
@@ -92,7 +105,6 @@ export async function transcribe(audioPath: string): Promise<string> {
       ], { maxBuffer: 64 * 1024 * 1024 });
       stdout = r.stdout;
     } else {
-      // 其他系统：直接执行
       const r = await execFileAsync(SENSEVOICE_BIN, [
         '-m', SENSEVOICE_MODEL,
         '--vad', SENSEVOICE_VAD,
@@ -104,8 +116,37 @@ export async function transcribe(audioPath: string): Promise<string> {
 
     // 3) 解析 SRT
     return parseSrt(stdout);
-
   } finally {
     try { if (fs.existsSync(wavPath)) fs.unlinkSync(wavPath); } catch {}
   }
+}
+
+/**
+ * 对外接口：Groq Whisper → 本地 SenseVoice
+ */
+export async function transcribe(audioPath: string): Promise<string> {
+  // 1) Groq 优先
+  if (process.env.GROQ_API_KEY) {
+    try {
+      const { transcribe: groqTranscribe } = await import('./groq-whisper.js');
+      const t0 = Date.now();
+      const text = await groqTranscribe(audioPath);
+      if (text) {
+        console.log(`[sensevoice] Groq 成功 (${((Date.now() - t0) / 1000).toFixed(1)}s, ${text.length}字)`);
+        return text;
+      }
+      console.warn('[sensevoice] Groq 返回空，切本地');
+    } catch (e: any) {
+      console.warn(`[sensevoice] Groq 失败，切本地: ${e.message?.slice(0, 150)}`);
+    }
+  } else {
+    console.log('[sensevoice] 未配置 GROQ_API_KEY，直接用本地');
+  }
+
+  // 2) 本地兜底
+  console.log('[sensevoice] 使用本地 SenseVoice ...');
+  const t0 = Date.now();
+  const text = await transcribeLocal(audioPath);
+  console.log(`[sensevoice] 本地成功 (${((Date.now() - t0) / 1000).toFixed(1)}s, ${text.length}字)`);
+  return text;
 }

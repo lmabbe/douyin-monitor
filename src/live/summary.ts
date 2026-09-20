@@ -10,6 +10,7 @@ import {logger} from '../logger.js';
 import {pushToWechat} from '../wechat/wechat.js';
 import {RECORDS_DIR} from '../config.js';
 import {fmtErr} from '../runtime.js';
+import {summarizeSession} from '../ai'
 
 // ========== 时间格式化 ==========
 export function formatBeijingTime(d: Date): string {
@@ -106,18 +107,10 @@ export async function generateAndPushSummary(anchor: Anchor): Promise<void> {
     const t0 = Date.now();
     let summary = '';
     try {
-        logger.info(anchor.name, '[LIVE] [ai] 调用 gemini (直播总结)');
-        const {summarizeSession} = await import('../ai/gemini.js');
         summary = await summarizeSession(fullText);
     } catch (e: any) {
-        logger.warn(anchor.name, `[LIVE] Gemini 失败，降级到腾讯: ${fmtErr(e)}`);
-        try {
-            const {summarizeSession} = await import('../ai/tencent.js');
-            summary = await summarizeSession(fullText);
-        } catch (e2: any) {
-            logger.error(anchor.name, `[LIVE] 所有 AI 都失败: ${fmtErr(e2)}`);
-            return;
-        }
+        logger.error(anchor.name, `[LIVE] 所有 AI 都失败: ${fmtErr(e)}`);
+        return;
     }
     const dt = ((Date.now() - t0) / 1000).toFixed(1);
     const summaryPath = path.join(path.dirname(transcriptPath), 'summary.md');

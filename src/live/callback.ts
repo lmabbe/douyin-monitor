@@ -11,6 +11,7 @@ import {pushToWechat} from '../wechat/wechat.js';
 import {fmtErr, segmentCounters} from '../runtime.js';
 import {AI_SUMMARY_EVERY} from '../config.js';
 import {formatBeijingTime} from './summary.js';
+import {summarizeSegment} from '../ai'
 
 // ========== 切片模式 ==========
 export async function onSegmentReady(
@@ -22,7 +23,7 @@ export async function onSegmentReady(
     logger.info(anchor.name, `[LIVE] ASR start: ${name}`);
     const t0 = Date.now();
     try {
-        const rawText = await (await import('../asr/sensevoice-server.js')).transcribe(segmentPath);
+        const rawText = await (await import('../asr/sensevoice.js')).transcribe(segmentPath);
         const dt = ((Date.now() - t0) / 1000).toFixed(1);
         if (!rawText) {
             logger.warn(anchor.name, `[LIVE] ASR 空结果: ${name}`);
@@ -50,16 +51,9 @@ export async function onSegmentReady(
 
         let text = rawText;
         try {
-            const {summarizeSegment} = await import('../ai/gemini.js');
             text = await summarizeSegment(rawText);
         } catch (e: any) {
-            logger.warn(anchor.name, `[LIVE] Gemini 失败，降级到腾讯: ${fmtErr(e)}`);
-            try {
-                const {summarizeSegment} = await import('../ai/tencent.js');
-                text = await summarizeSegment(rawText);
-            } catch (e2: any) {
-                logger.error(anchor.name, `[LIVE] 所有 AI 都失败: ${fmtErr(e2)}`);
-            }
+            logger.error(anchor.name, `[LIVE] AI 降级链全部失败: ${fmtErr(e)}`);
         }
         const summaryPath = path.join(hourDir, 'summary.txt');
         fs.appendFileSync(summaryPath, `\n## ${timeTag} (${name})\n${text}\n`, 'utf-8');
@@ -83,17 +77,9 @@ export async function onStreamFlush(
     const t0 = Date.now();
     let summary = text;
     try {
-        logger.info(anchor.name, '[LIVE] [ai] 调用 gemini (stream)');
-        const {summarizeSegment} = await import('../ai/gemini.js');
         summary = await summarizeSegment(text);
     } catch (e: any) {
-        logger.warn(anchor.name, `[LIVE] Gemini 失败，降级到腾讯: ${fmtErr(e)}`);
-        try {
-            const {summarizeSegment} = await import('../ai/tencent.js');
-            summary = await summarizeSegment(text);
-        } catch (e2: any) {
-            logger.error(anchor.name, `[LIVE] 所有 AI 都失败，用原始: ${fmtErr(e2)}`);
-        }
+        logger.error(anchor.name, `[LIVE] AI 降级链全部失败，用原始文本: ${fmtErr(e)}`);
     }
     const dt = ((Date.now() - t0) / 1000).toFixed(1);
     logger.info(anchor.name, `[LIVE] summary done (${dt}s) -> summary.txt`);
