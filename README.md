@@ -1,346 +1,686 @@
 # 抖音直播 + 视频监控系统
 
-监控抖音主播的直播和视频，自动转文字、AI 总结、推送微信。
+## 一句话介绍
 
-## 系统架构
+一个长期运行的抖音主播监控系统，同时监控**直播**和**视频更新**，自动完成：
 
-    抖音主播（直播流 + 视频主页）
-        |
-    +---+---+
-    |       |
- 直播监控  视频监控
- 30秒检查  5分钟检查
-    |       |
- FFmpeg拉流  polydl下载
- PCM输出    FFmpeg提音频
-    |       |
- Gemini Live  Gemini Live
- 流式转写      文件转写
-    |       |
- 4分钟落盘    写xxx.txt
-    |       |
- AI总结      AI总结
-    +---+---+
-        |
-   微信推送
+> 发现直播/视频 → 音频获取 → ASR 转文字 → AI 提炼观点 → 微信推送
 
-## 目录结构
-
-    douyin-live/
-    ├── .env                         # 环境变量
-    ├── .video-state.json            # 视频监控基准时间
-    ├── .wechat-cred.json            # 微信登录凭证
-    ├── config/
-    │   └── anchors.json             # 主播配置
-    ├── records/
-    │   ├── 李一恩/
-    │   │   ├── live/                # 直播录制
-    │   │   │   └── 202609151303/    # YYYYMMDDHHmm
-    │   │   │       ├── live_transcript.txt
-    │   │   │       └── summary.txt
-    │   │   └── video/               # 视频录制
-    │   │       └── 202609151316/    # YYYYMMDDHHmm
-    │   │           ├── xxx.m4a
-    │   │           ├── xxx.txt
-    │   │           └── xxx.summary.txt
-    │   └── 麦麦吉/...
-    ├── src/
-    │   ├── index.ts                 # 主入口
-    │   ├── douyin/                  # 抖音 API
-    │   ├── recorder/                # 录音
-    │   ├── asr/                     # 语音识别
-    │   ├── ai/                      # AI 总结
-    │   └── video/                   # 视频监控
-    ├── manage.sh                    # 管理脚本
-    ├── monitor.out                  # 运行日志
-    └── outbox.jsonl                 # 微信推送队列
-
-## 配置
-
-### .env
-
-    DOUYIN_COOKIE=sessionid=xxx; ttwid=xxx
-    ASR_MODE=stream
-    STREAM_FLUSH_MINUTES=4
-    AI_SUMMARY_EVERY=4
-    VIDEO_CHECK_MINUTES=5
-    GEMINI_API_KEY=xxx
-    GEMINI_MODEL=gemini-3.8-flash,gemini-3.5-flash-lite,gemini-3.1-flash-lite,gemma-4-26b-a4b-it
-    GEMINI_LIVE_MODEL=gemini-3.5-transcribe-live
-    TENCENT_API_KEY=xxx
-    TENCENT_BASE_URL=https://tokenhub.tencentmaas.com/v1
-    TENCENT_MODEL=qwen3.5-flash
-    SENSEVOICE_DIR=/data/data/com.termux/files/home/sensevoice
-    SENSEVOICE_BIN=/data/data/com.termux/files/home/sensevoice/llama-funasr-sensevoice
-    SENSEVOICE_MODEL=/data/data/com.termux/files/home/sensevoice/gguf/sensevoice-small-q8.gguf
-    SENSEVOICE_VAD=/data/data/com.termux/files/home/sensevoice/gguf/fsmn-vad.gguf
-    ASR_SERVER_URL=http://192.168.0.105:3000
-    NODE_OPTIONS=--dns-result-order=ipv4first
-
-### config/anchors.json
-
-    [
-      {
-        "name": "李一恩",
-        "webRid": "97162299125",
-        "videoUrl": "https://www.douyin.com/user/MS4wLjABAAAA...",
-        "enabled": true
-      },
-      {
-        "name": "test",
-        "webRid": "824232257612",
-        "videoUrl": "",
-        "enabled": true
-      }
-    ]
-
-字段说明：
-- name：主播名
-- webRid：直播间短号。为空则不监控直播
-- videoUrl：视频主页。为空则不监控视频
-- enabled：是否启用
-
-## 管理命令
-
-    cd /data/data/com.termux/files/home/douyin-live
-
-    ./manage.sh start       # 启动
-    ./manage.sh stop        # 停止
-    ./manage.sh restart     # 重启
-    ./manage.sh status      # 状态
-    ./manage.sh log         # 最近30行
-    ./manage.sh log 100     # 最近100行
-    ./manage.sh log -f      # 实时
-    ./manage.sh tail        # 实时过滤
-    ./manage.sh clean       # 清空日志
-
-## 关键机制
-
-### 直播监控
-- 检查频率：每 30 秒
-- 开播检测：连续 3 次 OFFLINE 判定下播
-- 流式模式：FFmpeg PCM → Gemini Live → 每 4 分钟落盘
-- 下播：LIVE ended → 停止 → 用整场文字稿生成完整总结 → 推送微信
-
-### 视频监控
-- 检查频率：每 5 分钟
-- 基准时间：.video-state.json 记录"最后处理时间"
-- 首次：只处理最新 1 条
-- 增量：找发布时间 > 基准时间的
-- 时区：polydl 返回 UTC，代码里 -8 小时转北京时间
-
-### 微信推送格式
-- 直播盘中小段：【LIVE】【主播名】时间
-- 直播完整总结：【LIVE】【主播名】【总结】时间
-- 视频总结：【VIDEO】【主播名】发布时间
-
-iLink 限制：Bot 连续推送 10 条后，需要用户主动回复。
-
-### AI 降级链
-Gemini（多模型轮询） → 腾讯 qwen → 原始文本
-
-## 常用操作
-
-新增主播：改 anchors.json + ./manage.sh restart
-
-改时长：sed -i 's|STREAM_FLUSH_MINUTES=.*|STREAM_FLUSH_MINUTES=6|' .env
-
-看文字稿：cat records/李一恩/live/202609151303/live_transcript.txt
-
-看视频总结：cat records/李一恩/video/202609151316/*.summary.txt
-
-重置视频：rm -f .video-state.json && rm -rf records/*/video/ && ./manage.sh restart
-
-## 费用
-
-- Gemini Live：$0.009/分钟
-- 估算：每天约 $5，每月约 $150
-
-## 常见问题
-
-Q: 微信收不到？
-1. iLink 10 条限制，给 ClawBot 发消息保活
-2. 检查 .wechat-cred.json 里的 contextToken
-3. grep wechat monitor.out | tail -20
-
-Q: 直播结束没发总结？
-看日志有没有 LIVE ended。没有的话检查 rt.state 和 offlineCount。
-
-Q: Gemini Live 返回 0 字？
-检查 gemini-live-file.ts 的 setTimeout(finish, 60000)。
-
-## 后台运行
-
-    termux-wake-lock
-    tmux new -s douyin
-    cd /data/data/com.termux/files/home/douyin-live
-    ./manage.sh start
-    # Ctrl+B, D 脱离
-
-## 备份
-
-    cd /data/data/com.termux/files/home
-    tar -czf douyin-live-backup-$(date +%Y%m%d).tar.gz \
-      douyin-live/.env \
-      douyin-live/config \
-      douyin-live/.wechat-cred.json \
-      douyin-live/.video-state.json
-
-## 更新日志
-
-- 2026-09-15：视频监控接入 Gemini Live，直播总结加【总结】标记
-- 2026-09-14：系统初版
-
+核心目标是减少人工盯直播和刷视频的时间，同时保留完整文字稿和总结记录。
 
 ---
 
-## 启动步骤
+## 1. 系统整体架构
 
-### 首次部署
+```text
+                 抖音主播
+                /        \
+             直播          视频
+              |             |
+        30 秒检查       5~10 分钟随机检查
+              |             |
+          FFmpeg 拉流     polydl 下载
+              |             |
+           PCM 音频      FFmpeg 提音频
+              |             |
+             ASR           ASR
+              |             |
+             AI 小结       AI 总结
+              \             /
+                微信推送
+```
 
-#### 1. 装依赖
+### 主要处理链
 
-Termux:
-    pkg update
-    pkg install ffmpeg nodejs-lts git make clang
+**直播：**
 
-Ubuntu/Debian:
-    sudo apt update
-    sudo apt install ffmpeg git
-    curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -
-    sudo apt install nodejs
+```text
+直播状态检测
+    ↓
+FFmpeg 拉流
+    ↓
+Gemini Live / Groq Whisper / SenseVoice
+    ↓
+文字稿
+    ↓
+定期 AI 小结
+    ↓
+下播后整场总结
+    ↓
+微信推送
+```
 
-macOS:
-    brew install ffmpeg node@22 git
+**视频：**
 
-验证:
-    which ffmpeg && ffmpeg -version | head -1
-    which node && node -v
+```text
+视频列表检查
+    ↓
+发现新视频
+    ↓
+polydl 下载
+    ↓
+提取音频
+    ↓
+ASR
+    ↓
+AI 总结
+    ↓
+微信推送
+```
 
-#### 2. 进项目目录
+---
 
-    cd /data/data/com.termux/files/home/douyin-monitor
+## 2. 核心功能
 
-#### 3. 装依赖
+- **长期运行**：后台常驻、自动重连、错误冷却、进程管理
+- **直播监控**：约 30 秒检查一次，开播自动录制，下播自动总结
+- **视频监控**：5~10 分钟随机检查，只处理新增视频
+- **ASR 降级**：Groq Whisper → 本地 SenseVoice
+- **AI 降级**：
+  - 小结 / 单视频：Gemini → Groq → 腾讯 → 原始文本
+  - 整场直播：Gemini → 腾讯 → 原始文本
+- **微信推送**：开播提醒、直播小结、下播总结、视频总结
+- **多主播**：一个进程可以监控多个主播
+- **热重载**：修改主播配置和 Prompt 后可以 reload
+- **本地优先**：ASR 可以使用本地 SenseVoice 作为兜底
 
-    npm install
+---
 
-#### 4. 配置 .env
+## 3. 一个非常重要的限制：微信 10 条消息
 
-必须：
-    GEMINI_API_KEY=xxx
-    TENCENT_API_KEY=xxx
-    DOUYIN_COOKIE=xxx
+系统使用 iLink Bot 推送微信。
 
-可选：
-    ASR_MODE=stream
-    STREAM_FLUSH_MINUTES=4
-    AI_SUMMARY_EVERY=4
-    VIDEO_CHECK_MINUTES=5
+当前存在一个平台限制：
 
-#### 5. 配置主播
+> Bot 连续推送约 10 条消息后，需要用户主动回复一条消息，才能继续接收推送。
 
-编辑 config/anchors.json:
-    [
-      {
-        "name": "李一恩",
-        "webRid": "97162299125",
-        "videoUrl": "https://www.douyin.com/user/MS4wLjABAAAA...",
-        "enabled": true
-      }
-    ]
+因此：
 
-#### 6. 启动
+```text
+Bot 推送 1~10 条
+        ↓
+用户没有回复
+        ↓
+后续消息进入 outbox.jsonl
+        ↓
+用户回复一条消息
+        ↓
+积压消息继续发送
+```
 
-    ./manage.sh start
+### 实际使用建议
 
-#### 7. 验证
+直播期间如果推送比较频繁：
 
-    ./manage.sh status
-    ./manage.sh log 30
+- 每收到 5~8 条推送，回复一次
+- 无人值守时定期回复
+- 如果发现推送停止，可以先回复 `1` 测试
 
-看到这些说明成功:
-    [system] === 抖音直播 + 视频监控启动 ===
-    [system] ASR 模式: stream
-    [system] [wechat] 使用已保存凭证，直接监听
-    [system] 已加载 N 个主播
-    [李一恩] [LIVE] OFFLINE (1/3)
+推送队列使用 `outbox.jsonl`，因此消息不会因为暂时无法发送而直接丢失。
 
-### 日常启动
+---
 
-启动:
-    ./manage.sh start
+## 4. ASR 架构
 
-状态:
-    ./manage.sh status
-    ./manage.sh log 30
-    ./manage.sh log -f
-    ./manage.sh tail
+### 主链
 
-停止:
-    ./manage.sh stop
+```text
+Groq Whisper
+    ↓ 失败
+本地 SenseVoice
+```
 
-重启:
-    ./manage.sh restart
+Groq Whisper 主要负责快速转写。
 
-### 首次微信登录
+本地 SenseVoice 作为离线兜底。
 
-首次启动时，如果 .wechat-cred.json 不存在：
-1. 终端显示二维码
-2. 用微信扫一扫
-3. 授权后凭证保存
-4. 重启不需要再扫码
+### 支持模式
 
-重要：首次登录后，去微信里给 ClawBot 发一条消息（比如"hi"），
-激活 contextToken。之后才能收到推送。
+系统目前有：
 
-### 后台长期运行
+- `stream`：流式处理
+- `segment`：切片处理
 
-Termux:
-    termux-wake-lock
-    pkg install tmux
-    tmux new -s douyin
-    cd /data/data/com.termux/files/home/douyin-monitor
-    ./manage.sh start
-    # Ctrl+B 然后 D 脱离
+流式模式主要用于直播：
 
-恢复:
-    tmux attach -t douyin
+```text
+FFmpeg PCM
+    ↓
+Gemini Live
+    ↓
+持续获得转写文本
+    ↓
+每 N 分钟落盘 + AI 小结
+```
 
-### 验证状态
+---
 
-进程:
-    ./manage.sh status
+## 5. AI 总结架构
 
-日志:
-    ./manage.sh log 30
+### 小结 / 视频总结
 
-目录:
-    find records -type d | head -20
+```text
+Gemini
+  ↓ 失败
+Groq
+  ↓ 失败
+腾讯
+  ↓ 失败
+原始文本
+```
 
-微信:
-    grep wechat monitor.out | tail -10
+### 整场直播总结
 
-### 常见问题
+```text
+Gemini
+  ↓ 失败
+腾讯
+  ↓
+原始文本
+```
 
-spawn ffmpeg ENOENT:
-    pkg install ffmpeg
+整场直播文本可能非常长，因此没有把 Groq 作为主要整场总结方案。
 
-Cannot find module:
-    npm install
+---
 
-启动后立刻退出:
-    ./manage.sh log 50
-    tail -100 monitor.out
+## 6. 直播监控机制
 
-微信没显示二维码:
-    rm -f .wechat-cred.json
-    ./manage.sh restart
+### 状态检查
+
+- 每约 30 秒检查一次
+- 连续 OFFLINE 状态用于判断是否真正下播
+- 连续失败达到阈值后进入 ERROR
+- 冷却后自动重试
+
+### 开播
+
+```text
+检测 LIVE
+ ↓
+开始录制
+ ↓
+启动 ASR
+ ↓
+持续产生文字稿
+ ↓
+定期 AI 小结
+ ↓
+微信推送
+```
+
+### 下播
+
+```text
+检测下播
+ ↓
+停止录音
+ ↓
+等待 ASR 队列处理完成
+ ↓
+生成整场总结
+ ↓
+微信推送
+ ↓
+保存完整记录
+```
+
+---
+
+## 7. 视频监控机制
+
+视频检查间隔为 **5~10 分钟随机检查**。
+
+使用 `.video-state.json` 保存基准时间。
+
+### 首次运行
+
+首次运行不会把历史视频全部处理，而是只处理最新的一条。
+
+### 后续运行
+
+只处理：
+
+```text
+发布时间 > 上一次处理时间
+```
+
+因此属于增量监控。
+
+系统还处理了 `polydl` 返回时间与北京时间之间的时区转换。
+
+---
+
+## 8. 微信推送类型
+
+系统目前主要有四种推送：
+
+| 类型 | 格式 |
+|---|---|
+| 开播提醒 | `【LIVE】【主播名】时间` |
+| 直播盘中小结 | `【LIVE】【主播名】时间` |
+| 直播完整总结 | `【LIVE】【主播名】【总结】时间` |
+| 视频总结 | `【VIDEO】【主播名】发布时间` |
+
+---
+
+## 9. 配置结构
+
+### 主播
+
+`config/anchors.json`
+
+主要字段：
+
+```json
+{
+  "name": "主播名",
+  "webRid": "直播间短号",
+  "videoUrl": "视频主页",
+  "enabled": true
+}
+```
+
+其中：
+
+- `name`：主播名称
+- `webRid`：直播间标识，为空时不监控直播
+- `videoUrl`：视频主页，为空时不监控视频
+- `enabled`：是否启用
+
+### AI Prompt
+
+`config/prompts.json`
+
+主要包括：
+
+- `cleanTranscript.system`：ASR 文字纠错
+- `summarizeSegment.system`：切片 / 视频小结
+- `summarizeSession.system`：整场直播总结
+
+修改后可以：
+
+```bash
+./manage.sh reload
+```
+
+无需完整重启。
+
+---
+
+## 10. 关键环境变量
+
+```bash
+# AI
+GEMINI_API_KEY=xxx
+GROQ_API_KEY=xxx
+TENCENT_API_KEY=xxx
+
+# 抖音
+DOUYIN_COOKIE=sessionid=xxx; ttwid=xxx
+
+# ASR
+ASR_MODE=stream
+STREAM_FLUSH_MINUTES=4
+AI_SUMMARY_EVERY=4
+
+# 视频
+VIDEO_CHECK_MINUTES=5,10
+
+# AI 模型
+GEMINI_MODEL=gemini-2.0-flash,gemini-1.5-flash
+GROQ_MODEL=openai/gpt-oss-120b,openai/gpt-oss-20b,llama-3.3-70b-versatile
+GROQ_WHISPER_MODEL=whisper-large-v3-turbo,whisper-large-v3
+TENCENT_MODEL=qwen3.5-flash
+```
+
+---
+
+## 11. 依赖
+
+### 基础环境
+
+- Node.js 20+
+- pnpm 9+
+- FFmpeg 6+
+- Git
+- tmux（可选）
+
+### 支持平台
+
+- macOS
+- Linux
+- Android / Termux
+
+Termux 还需要额外的 `glibc-runner`，用于运行部分 glibc 二进制。
+
+---
+
+## 12. 运行方式
+
+安装依赖：
+
+```bash
+pnpm install
+```
+
+启动：
+
+```bash
+./manage.sh start
+```
+
+查看状态：
+
+```bash
+./manage.sh status
+```
+
+查看日志：
+
+```bash
+./manage.sh log 30
+```
+
+实时日志：
+
+```bash
+./manage.sh log follow
+```
+
+热重载：
+
+```bash
+./manage.sh reload
+```
+
+停止：
+
+```bash
+./manage.sh stop
+```
+
+重启：
+
+```bash
+./manage.sh restart
+```
+
+---
+
+## 13. 后台长期运行
+
+推荐使用 `tmux`。
+
+```bash
+tmux new -s douyin
+cd ~/douyin-monitor
+./manage.sh start
+```
+
+退出 tmux：
+
+```text
+Ctrl+B → D
+```
+
+重新进入：
+
+```bash
+tmux attach -t douyin
+```
+
+Linux 还可以进一步使用 systemd 设置开机自启。
+
+---
+
+## 14. 数据目录
+
+```text
+records/
+├── 主播A/
+│   ├── live/
+│   │   └── 某场直播/
+│   │       ├── live_transcript.txt
+│   │       └── summary.txt
+│   └── video/
+│       └── 某个视频/
+│           ├── xxx.m4a
+│           ├── xxx.txt
+│           └── xxx.summary.txt
+└── 主播B/
+```
+
+因此系统不仅负责推送，还会在本地保存：
+
+- 直播录音
+- 直播文字稿
+- 直播总结
+- 视频音频
+- 视频文字稿
+- 视频总结
+
+---
+
+## 15. 项目结构
+
+```text
+douyin-monitor/
+├── config/
+│   ├── anchors.json
+│   ├── prompts.json
+│   └── websign_env.json
+├── records/
+├── src/
+│   ├── douyin/
+│   ├── recorder/
+│   ├── asr/
+│   ├── ai/
+│   ├── live/
+│   ├── video/
+│   └── wechat/
+├── manage.sh
+├── monitor.out
+└── outbox.jsonl
+```
+
+核心模块：
+
+| 模块 | 作用 |
+|---|---|
+| `douyin/` | 抖音 API / 数据获取 |
+| `recorder/` | 直播录制 |
+| `asr/` | 语音识别 |
+| `ai/` | AI 总结及降级 |
+| `live/` | 直播状态与生命周期 |
+| `video/` | 视频增量监控 |
+| `wechat/` | 微信推送 |
+
+---
+
+## 16. 常见问题
+
+### 启动后退出
+
+首先：
+
+```bash
+./manage.sh log 50
+tail -100 monitor.out
+```
+
+常见原因：
+
+- `spawn ffmpeg ENOENT` → FFmpeg 未安装
+- `Cannot find module` → 未执行 `pnpm install`
+- `GEMINI_API_KEY 未配置` → 环境变量缺失
+
+### 微信收不到消息
+
+优先检查：
+
+```bash
+wc -l outbox.jsonl
+grep wechat monitor.out | tail -20
+```
+
+如果 `outbox.jsonl` 持续增长，可能是消息发送受阻。
+
+然后检查：
+
+```bash
+cat .wechat-cred.json | grep contextToken
+```
+
+如果没有有效 `contextToken`，需要先在微信给 Bot 发一条消息。
+
+### 直播结束没有总结
+
+检查：
+
+```bash
+grep "LIVE ended" monitor.out | tail -5
+```
+
+重点检查直播运行状态以及 offline 计数。
+
+### 抖音 Cookie 失效
+
+如果出现：
+
+```text
+status_code=8
+```
+
+需要重新获取 Cookie，并更新配置。
+
+### ASR 失败
+
+可以分别测试 Groq Whisper 和本地 SenseVoice。
+
+---
+
+## 17. 常用维护操作
+
+### 新增主播
+
+修改：
+
+```text
+config/anchors.json
+```
+
+然后：
+
+```bash
+./manage.sh reload
+```
+
+### 修改小结频率
+
+修改：
+
+```bash
+STREAM_FLUSH_MINUTES=6
+```
+
+然后重启。
+
+### 修改 AI 模型
+
+修改 `.env` 中对应模型配置，然后重启。
+
+### 修改 Prompt
+
+修改：
+
+```text
+config/prompts.json
+```
+
+然后：
+
+```bash
+./manage.sh reload
+```
+
+### 重置视频监控
+
+```bash
+rm -f .video-state.json
+rm -rf records/*/video/
+./manage.sh restart
+```
 
 ### 更新代码
 
-    ./manage.sh stop
-    git pull
-    npm install
-    ./manage.sh start
+```bash
+./manage.sh stop
+git pull
+pnpm install
+./manage.sh start
+```
 
+---
+
+## 18. 成本
+
+原文档给出的估算是：
+
+| 项目 | 费用 |
+|---|---:|
+| Gemini | 免费额度 |
+| Groq Whisper | 免费额度 |
+| Groq Chat | 免费额度 |
+| 腾讯 TokenHub | 免费额度 |
+| 微信推送 | 免费 |
+| **合计** | **约 ¥0 / 月** |
+
+实际使用量较高时，需要注意各平台免费额度和限流。
+
+---
+
+## 19. 项目核心特点总结
+
+这个项目本质上是一个：
+
+> **“抖音内容自动采集 → 语音识别 → AI 信息提炼 → 微信通知 → 本地归档”的长期运行管道。**
+
+它解决的不是单纯的“下载直播”或“转文字”，而是把整个流程自动化：
+
+```text
+┌──────────────┐
+│ 抖音直播/视频 │
+└──────┬───────┘
+       ↓
+┌──────────────┐
+│ 自动发现内容 │
+└──────┬───────┘
+       ↓
+┌──────────────┐
+│ 音频获取/录制 │
+└──────┬───────┘
+       ↓
+┌──────────────┐
+│     ASR      │
+│  语音 → 文字 │
+└──────┬───────┘
+       ↓
+┌──────────────┐
+│      AI      │
+│ 纠错 + 总结  │
+└──────┬───────┘
+       ↓
+┌──────────────┐
+│   微信推送   │
+└──────┬───────┘
+       ↓
+┌──────────────┐
+│   本地归档   │
+└──────────────┘
+```
+
+**最终产物主要有三类：**
+
+1. **实时信息**：微信收到直播小结
+2. **完整信息**：下播后的整场总结 / 视频总结
+3. **原始资料**：本地保存的录音和完整文字稿

@@ -35,7 +35,7 @@ const P = {
 };
 
 // ========== 两条链 ==========
-const CHAIN_SEGMENT: Provider[] = [P.groq, P.gemini, P.tencent];
+const CHAIN_SEGMENT: Provider[] = [P.gemini, P.groq, P.tencent];
 const CHAIN_SESSION: Provider[] = [P.gemini, P.tencent];
 
 // cleanTranscript 跟小结一样（输入量级类似）
