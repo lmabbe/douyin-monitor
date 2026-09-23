@@ -42,3 +42,4 @@ config/.backups/
 # 临时文件
 .tmp/
 *.tmp
+.groq-disabled.json
