@@ -13,6 +13,7 @@ export class DouyinClient {
       timeout: 15000,
       headers: { 'User-Agent': process.env.DOUYIN_USER_AGENT || UA_DEFAULT },
       validateStatus: () => true,
+      proxy: false,   // ← 加这一行，禁用环境变量代理
     });
   }
 

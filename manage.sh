@@ -39,12 +39,10 @@ cmd_start() {
     return 1
   fi
 
-  # 清理旧 PID 文件
   rm -f "$PID_FILE"
 
   echo -e "${BLUE}[*] 启动监控...${NC}"
 
-  # 后台运行，输出到日志
   nohup npx tsx src/index.ts > "$OUT_LOG" 2>&1 &
   local pid=$!
   echo "$pid" > "$PID_FILE"
@@ -74,10 +72,8 @@ cmd_stop() {
   local pid=$(get_pid)
   echo -e "${BLUE}[*] 停止监控 (PID $pid)...${NC}"
 
-  # 先发 SIGTERM 让 Node 优雅退出（会触发 ffmpeg 清理）
   kill -TERM "$pid" 2>/dev/null
 
-  # 等待最多 10 秒
   local i=0
   while [ $i -lt 20 ]; do
     if ! kill -0 "$pid" 2>/dev/null; then
@@ -87,14 +83,12 @@ cmd_stop() {
     i=$((i + 1))
   done
 
-  # 还在则强杀
   if kill -0 "$pid" 2>/dev/null; then
     echo -e "${YELLOW}[!] 优雅退出超时，强制终止${NC}"
     kill -9 "$pid" 2>/dev/null
     sleep 1
   fi
 
-  # 清理可能残留的子进程
   pkill -f "tsx src/index.ts" 2>/dev/null
   pkill -f "whisper-cli" 2>/dev/null
   pkill -f "ffmpeg.*pull-" 2>/dev/null
@@ -112,11 +106,9 @@ cmd_status() {
     echo -e "  状态: ${GREEN}运行中${NC}"
     echo -e "  PID:  $pid"
 
-    # 进程启动时长
     local uptime=$(ps -o etime= -p "$pid" 2>/dev/null | tr -d ' ')
     [ -n "$uptime" ] && echo -e "  运行: $uptime"
 
-    # 内存占用
     local rss=$(ps -o rss= -p "$pid" 2>/dev/null | tr -d ' ')
     if [ -n "$rss" ]; then
       echo -e "  内存: $((rss / 1024)) MB"
@@ -174,7 +166,6 @@ cmd_log() {
       tail -30 "$OUT_LOG"
       ;;
     *)
-      # 数字参数，取行数
       if [[ "$1" =~ ^[0-9]+$ ]]; then
         tail -"$1" "$OUT_LOG"
       else
@@ -186,25 +177,25 @@ cmd_log() {
   esac
 }
 
-# ---------- restart ----------
+# ---------- reload ----------
 cmd_reload() {
   echo -e "${BLUE}[*] 触发配置热重载...${NC}"
   if ! is_running; then
     echo -e "${YELLOW}[!] 未在运行${NC}"
     return 1
   fi
-  # 创建信号文件，程序检测到后重载 anchors.json
   touch "$DIR/.reload"
   echo -e "${GREEN}[ok] 已触发，2 秒后查看日志: ./manage.sh log 10${NC}"
 }
 
+# ---------- restart ----------
 cmd_restart() {
   cmd_stop
   sleep 1
   cmd_start
 }
 
-# ---------- tail-log（实时查看 filter） ----------
+# ---------- tail ----------
 cmd_tail() {
   if [ ! -f "$OUT_LOG" ]; then
     echo -e "${YELLOW}[!] 无日志文件${NC}"
@@ -214,7 +205,7 @@ cmd_tail() {
   tail -f "$OUT_LOG" | grep --line-buffered -E "LIVE|OFFLINE|segment|ASR|summary|wechat|ERROR|WARN|总结"
 }
 
-# ---------- clean（清理旧日志） ----------
+# ---------- clean ----------
 cmd_clean() {
   read -p "确认清理日志文件？(y/N) " ans
   if [ "$ans" = "y" ] || [ "$ans" = "Y" ]; then
@@ -226,6 +217,61 @@ cmd_clean() {
   fi
 }
 
+# ---------- login（扫码添加新微信账号） ----------
+cmd_login() {
+  echo -e "${BLUE}[*] 微信扫码登录新账号${NC}"
+  echo -e "${BLUE}    可选参数: --name 备注名 --subs tag1,tag2${NC}"
+  echo ""
+  npx tsx src/wechat/sender.ts "$@"
+  local rc=$?
+  if [ $rc -eq 0 ]; then
+    echo -e "${GREEN}[ok] 登录完成${NC}"
+    echo -e "${YELLOW}[!] 若主程序正在运行，请执行 ./manage.sh restart 使其生效${NC}"
+  else
+    echo -e "${RED}[!] 登录失败 (exit $rc)${NC}"
+  fi
+  return $rc
+}
+
+# ---------- accounts（列出所有账号） ----------
+cmd_accounts() {
+  npx tsx -e '
+    import { loadAccounts } from "./src/wechat.js";
+    const list = loadAccounts();
+    if (!list.length) { console.log("（无账号，运行 ./manage.sh login 添加）"); process.exit(0); }
+    console.log(`共 ${list.length} 个账号:\n`);
+    for (const a of list) {
+      const subs = a.subscriptions?.length ? a.subscriptions.join(", ") : "(全部)";
+      console.log(`  [${a.name || "-"}] ${a.id}`);
+      console.log(`      订阅: ${subs}`);
+      console.log(`      目标: ${a.targetUserId || "(未捕获，等待对方发消息)"}`);
+      console.log("");
+    }
+  '
+}
+
+# ---------- sub（修改订阅） ----------
+cmd_sub() {
+  local who="$1"
+  local subs="$2"
+  if [ -z "$who" ] || [ -z "$subs" ]; then
+    echo "用法: ./manage.sh sub <accountId|name> tag1,tag2"
+    echo "      tag 传 * 表示全部（清空订阅）"
+    return 1
+  fi
+  npx tsx -e "
+    import { loadAccounts, updateSubscriptions } from './src/wechat.js';
+    const who = process.argv[1];
+    const subsArg = process.argv[2];
+    const list = loadAccounts();
+    const acc = list.find(a => a.id === who || a.name === who);
+    if (!acc) { console.error('未找到账号: ' + who); process.exit(1); }
+    const subs = subsArg === '*' ? [] : subsArg.split(',').map(s => s.trim()).filter(Boolean);
+    updateSubscriptions(acc.id, subs);
+    console.log('已更新 [' + (acc.name||acc.id) + '] 订阅: ' + (subs.length ? subs.join(', ') : '(全部)'));
+  " "$who" "$subs"
+}
+
 # ---------- usage ----------
 usage() {
   cat << EOF
@@ -234,15 +280,19 @@ usage() {
 用法: ./manage.sh <命令>
 
 命令:
-  start         启动监控（后台运行）
-  stop          停止监控
-  restart       重启监控
-  reload        热重载 anchors.json（不重启）
-  status        查看运行状态
-  log [N]       查看最近 N 行日志（默认 30）
-  log follow    实时查看日志（等同 tail -f）
-  tail          实时查看关键日志（过滤版）
-  clean         清空日志
+  start                           启动监控（后台运行）
+  stop                            停止监控
+  restart                         重启监控
+  reload                          热重载 anchors.json（不重启）
+  status                          查看运行状态
+  log [N]                         查看最近 N 行日志（默认 30）
+  log follow                      实时查看日志（等同 tail -f）
+  tail                            实时查看关键日志（过滤版）
+  clean                           清空日志
+
+  login [--name N] [--subs a,b]   扫码登录新微信账号（可指定备注名和订阅）
+  accounts                        列出所有微信账号及订阅
+  sub <id|name> <tag1,tag2>       修改某账号订阅（tag 传 * 表示全部）
 
 示例:
   ./manage.sh start
@@ -250,19 +300,28 @@ usage() {
   ./manage.sh log follow
   ./manage.sh tail
 
+  ./manage.sh login --name 主号 --subs 游戏,带货
+  ./manage.sh login --name 小号
+  ./manage.sh accounts
+  ./manage.sh sub 主号 游戏,带货,户外
+  ./manage.sh sub 小号 *
+
 EOF
 }
 
 # ---------- 入口 ----------
 case "$1" in
-  start)    cmd_start ;;
-  stop)     cmd_stop ;;
-  restart)  cmd_restart ;;
-  reload)   cmd_reload ;;
-  status|st) cmd_status ;;
-  log)      shift; cmd_log "$@" ;;
-  tail)     cmd_tail ;;
-  clean)    cmd_clean ;;
+  start)        cmd_start ;;
+  stop)         cmd_stop ;;
+  restart)      cmd_restart ;;
+  reload)       cmd_reload ;;
+  status|st)    cmd_status ;;
+  log)          shift; cmd_log "$@" ;;
+  tail)         cmd_tail ;;
+  clean)        cmd_clean ;;
+  login)        shift; cmd_login "$@" ;;
+  accounts|acc) cmd_accounts ;;
+  sub)          shift; cmd_sub "$@" ;;
   ""|help|-h|--help) usage ;;
-  *)        echo -e "${RED}[!] 未知命令: $1${NC}"; echo ""; usage; exit 1 ;;
+  *)            echo -e "${RED}[!] 未知命令: $1${NC}"; echo ""; usage; exit 1 ;;
 esac
