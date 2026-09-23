@@ -236,7 +236,7 @@ cmd_login() {
 # ---------- accounts（列出所有账号） ----------
 cmd_accounts() {
   npx tsx -e '
-    import { loadAccounts } from "./src/wechat.js";
+    import { loadAccounts } from "./src/wechat/wechat.ts";
     const list = loadAccounts();
     if (!list.length) { console.log("（无账号，运行 ./manage.sh login 添加）"); process.exit(0); }
     console.log(`共 ${list.length} 个账号:\n`);
@@ -249,6 +249,7 @@ cmd_accounts() {
     }
   '
 }
+
 
 # ---------- sub（修改订阅） ----------
 cmd_sub() {
