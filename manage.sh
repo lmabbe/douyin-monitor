@@ -261,7 +261,7 @@ cmd_sub() {
     return 1
   fi
   npx tsx -e "
-    import { loadAccounts, updateSubscriptions } from './src/wechat.js';
+    import { loadAccounts, updateSubscriptions } from './src/wechat/wechat.ts';
     const who = process.argv[1];
     const subsArg = process.argv[2];
     const list = loadAccounts();
